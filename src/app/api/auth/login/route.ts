@@ -1,25 +1,22 @@
 import { NextResponse } from 'next/server';
-import connectDB from '@/lib/db';
+import { connectToDatabase } from '@/lib/mongodb';
 import { User } from '@/models/User';
-import { generateToken } from '@/lib/auth';
-import { OTP } from '@/models/OTP';
-import { generateOTP } from '@/lib/auth';
-import { sendVerificationEmail } from '@/lib/mail';
+import jwt from 'jsonwebtoken';
 
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    await connectDB();
-    
-    const body = await req.json();
-    const { identifier, password } = body;    
-    // Validate required fields
-    if (!identifier || !password) {
+    const { identifier, password, captchaAnswer, expectedAnswer } = await request.json();
+
+    // Validate captcha
+    if (captchaAnswer !== expectedAnswer.toString()) {
       return NextResponse.json(
-        { error: 'Email/username and password are required' },
+        { error: 'Invalid captcha answer' },
         { status: 400 }
       );
     }
-    
+
+    await connectToDatabase();
+
     // Find user by email or username
     const user = await User.findOne({
       $or: [
@@ -27,15 +24,23 @@ export async function POST(req: Request) {
         { username: identifier }
       ]
     });
-    
+
     if (!user) {
       return NextResponse.json(
         { error: 'Invalid credentials' },
         { status: 401 }
       );
     }
-    
-    // Check password first before proceeding with email verification
+
+    // Check if email is verified
+    if (!user.isEmailVerified) {
+      return NextResponse.json(
+        { error: 'Please verify your email first' },
+        { status: 401 }
+      );
+    }
+
+    // Check password
     const isValidPassword = await user.comparePassword(password);
     if (!isValidPassword) {
       return NextResponse.json(
@@ -43,64 +48,57 @@ export async function POST(req: Request) {
         { status: 401 }
       );
     }
-    
-    // Check if email is verified
-    if (!user.isEmailVerified) {
-      
-      // Delete any existing verification OTPs
-      await OTP.deleteMany({
-        email: user.email,
-        type: 'EMAIL_VERIFICATION'
-      });
-      
-      // Generate and save new OTP
-      const otp = generateOTP();
-      await OTP.create({
-        email: user.email,
-        otp,
-        type: 'EMAIL_VERIFICATION'
-      });
-      
-      // Send new verification email
-      await sendVerificationEmail(user.email, otp);
-      
+
+    // Check if password is expired
+    if (user.isPasswordExpired()) {
       return NextResponse.json(
-        {
-          error: 'Please verify your email before logging in',
-          requiresVerification: true,
-          email: user.email
+        { 
+          error: 'Password has expired',
+          requiresPasswordChange: true,
+          message: 'Please change your password to continue'
         },
         { status: 403 }
       );
     }
-    
-    // Check if password needs to be changed
-    const passwordAge = Date.now() - user.passwordLastChanged.getTime();
-    const daysOld = passwordAge / (1000 * 60 * 60 * 24);
-    const passwordExpired = daysOld >= 90;
-    
+
+    // Check if password needs renewal
+    if (user.needsPasswordRenewal()) {
+      return NextResponse.json(
+        { 
+          warning: 'Password will expire soon',
+          requiresPasswordChange: true,
+          message: 'Please change your password within 7 days'
+        },
+        { status: 200 }
+      );
+    }
+
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET is not defined');
+    }
+
     // Generate JWT token
-    const token = generateToken({
-      userId: user._id.toString(),
-      email: user.email,
-      username: user.username,
-    });
-    
-    const response = {
-      message: 'Login successful',
-      token,
+    const token = jwt.sign(
+      { 
+        userId: user._id,
+        email: user.email,
+        username: user.username
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Return user details and token
+    return NextResponse.json({
       user: {
         id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
         email: user.email,
         username: user.username,
       },
-      passwordExpired,
-    };
-    return NextResponse.json(response);
-    
-  } catch (error: any) {
+      token,
+    });
+  } catch (error) {
+    console.error('Login error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

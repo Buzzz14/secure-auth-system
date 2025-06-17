@@ -15,16 +15,19 @@ interface ResetPasswordProps {
 export function ResetPassword({ email }: ResetPasswordProps) {
   const router = useRouter();
   const [form] = Form.useForm<ResetPasswordFormData>();
-  const { resetPassword } = useAuth();
+  const { resetPassword, resendResetCode } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [resendSuccess, setResendSuccess] = useState(false);
 
   const {
     otp,
     cooldown,
     canResend,
     setOTP,
+    handlePaste,
     handleKeyDown,
     startCooldown,
     getOTPString,
@@ -34,6 +37,25 @@ export function ResetPassword({ email }: ResetPasswordProps) {
   const { strength, getStrengthColor, getStrengthText } = usePasswordStrength(
     password || ""
   );
+
+  const handleResendCode = async () => {
+    try {
+      setResendLoading(true);
+      setError(null);
+      await resendResetCode(email);
+      setResendSuccess(true);
+      startCooldown();
+      // Clear success message after 3 seconds
+      setTimeout(() => setResendSuccess(false), 3000);
+    } catch (err: any) {
+      setError(
+        err.response?.data?.error ||
+          "Failed to resend verification code. Please try again."
+      );
+    } finally {
+      setResendLoading(false);
+    }
+  };
 
   const onFinish = async (values: ResetPasswordFormData) => {
     try {
@@ -100,19 +122,31 @@ export function ResetPassword({ email }: ResetPasswordProps) {
         />
       )}
 
+      {resendSuccess && (
+        <Alert
+          type="success"
+          message="Verification code has been resent to your email"
+          className="mb-4"
+          showIcon
+        />
+      )}
+
       <div className="mb-6">
-        <Text strong className="block mb-2">
-          Verification Code
-        </Text>
+        <div className="flex justify-between items-center mb-2">
+          <Text strong>Verification Code</Text>
+        </div>
         <div className="flex justify-center gap-2">
           {Array.from({ length: 6 }).map((_, index) => (
             <input
               key={index}
+              id={`otp-${index}`}
               type="text"
+              inputMode="numeric"
               maxLength={1}
               value={otp[index] || ""}
               onChange={(e) => setOTP(index, e.target.value)}
               onKeyDown={(e) => handleKeyDown(e, index)}
+              onPaste={handlePaste}
               className="w-12 h-12 text-center text-2xl border rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
             />
           ))}
@@ -132,8 +166,14 @@ export function ResetPassword({ email }: ResetPasswordProps) {
             { required: true, message: "Please enter a new password" },
             {
               validator: async (_, value) => {
-                if (value && !strength.isStrong) {
-                  throw new Error("Password does not meet requirements");
+                if (!value) return Promise.resolve();
+
+                if (strength.errors.length > 0) {
+                  throw new Error(strength.errors[0]);
+                }
+
+                if (value && strength.score < 3) {
+                  throw new Error("Password is not strong enough");
                 }
               },
             },
@@ -182,15 +222,25 @@ export function ResetPassword({ email }: ResetPasswordProps) {
         </Form.Item>
 
         <Form.Item>
-          <Button
-            type="primary"
-            htmlType="submit"
-            loading={loading}
-            disabled={getOTPString().length !== 6 || success}
-            className="w-full"
-          >
-            Reset Password
-          </Button>
+          <div className="flex flex-col gap-4">
+            <Button
+              type="primary"
+              htmlType="submit"
+              loading={loading}
+              disabled={getOTPString().length !== 6 || success}
+              className="w-full"
+            >
+              Reset Password
+            </Button>
+            <Button
+              type="default"
+              onClick={handleResendCode}
+              loading={resendLoading}
+              disabled={!canResend}
+            >
+              {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend Code"}
+            </Button>
+          </div>
         </Form.Item>
       </Form>
     </div>

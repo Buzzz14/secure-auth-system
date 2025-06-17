@@ -27,6 +27,7 @@ export interface ResetPasswordData {
 export interface LoginFormData {
   identifier: string;
   password: string;
+  captchaAnswer: string;
 }
 
 export interface ForgotPasswordFormData {
@@ -56,13 +57,14 @@ export interface AuthState {
 }
 
 export interface AuthContextType extends AuthState {
-  login: (identifier: string, password: string) => Promise<void>;
+  login: (identifier: string, password: string, captchaAnswer: string, expectedAnswer: number) => Promise<void>;
   register: (userData: RegisterData) => Promise<void>;
   logout: () => void;
   verifyEmail: (email: string, otp: string) => Promise<void>;
   resendVerificationEmail: (email: string) => Promise<void>;
   forgotPassword: (email: string) => Promise<void>;
   resetPassword: (data: ResetPasswordData) => Promise<void>;
+  resendResetCode: (email: string) => Promise<void>;
 }
 
 export interface JWTPayload {
@@ -99,6 +101,7 @@ export interface UseOTPInput {
     e: React.KeyboardEvent<HTMLInputElement>,
     index: number
   ) => void;
+  handlePaste: (e: React.ClipboardEvent<HTMLInputElement>) => void;
   startCooldown: () => void;
   getOTPString: () => string;
 }

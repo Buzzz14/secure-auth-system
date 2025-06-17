@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import connectDB from '@/lib/db';
 import { User } from '@/models/User';
 import { OTP } from '@/models/OTP';
-import { validatePassword } from '@/lib/auth';
-import { message } from 'antd';
+import { validatePassword, generateOTP } from '@/lib/auth';
+import { sendPasswordResetEmail } from '@/lib/mail';
+import { isStrongPassword } from '@/utils/security';
+import bcrypt from 'bcrypt';
 
 export async function POST(req: Request) {
   try {
@@ -29,10 +31,9 @@ export async function POST(req: Request) {
     }
     
     // Validate password strength
-    const { isValid, errors } = validatePassword(newPassword);
-    if (!isValid) {
+    if (!isStrongPassword(newPassword)) {
       return NextResponse.json(
-        { error: 'Password is not strong enough', details: errors },
+        { error: 'Password does not meet strength requirements' },
         { status: 400 }
       );
     }
@@ -61,11 +62,16 @@ export async function POST(req: Request) {
       );
     }
     
-    // Check if the new password was used before
-    const wasUsedBefore = await user.isPasswordUsedBefore(newPassword);
-    if (wasUsedBefore) {
+    // Check if new password is in history
+    const isInHistory = await Promise.all(
+      user.passwordHistory.map(async (oldPassword: string) => {
+        return bcrypt.compare(newPassword, oldPassword);
+      })
+    );
+
+    if (isInHistory.some(Boolean)) {
       return NextResponse.json(
-        { error: 'This password was used recently. Please choose a different password.' },
+        { error: 'New password cannot be the same as any of your last 5 passwords' },
         { status: 400 }
       );
     }
@@ -86,6 +92,60 @@ export async function POST(req: Request) {
     console.error('Reset password error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Endpoint to resend reset code
+export async function PUT(req: Request) {
+  try {
+    await connectDB();
+    
+    const body = await req.json();
+    const { email } = body;
+    
+    if (!email) {
+      return NextResponse.json(
+        { error: 'Email is required' },
+        { status: 400 }
+      );
+    }
+    
+    // Check if user exists
+    const user = await User.findOne({ email });
+    if (!user) {
+      return NextResponse.json(
+        { error: 'No account found with this email' },
+        { status: 404 }
+      );
+    }
+    
+    // Delete any existing password reset OTPs
+    await OTP.deleteMany({
+      email,
+      type: 'PASSWORD_RESET'
+    });
+    
+    // Generate and save new OTP
+    const otp = generateOTP();
+    await OTP.create({
+      email,
+      otp,
+      type: 'PASSWORD_RESET'
+    });
+    
+    // Send password reset email
+    await sendPasswordResetEmail(email, otp);
+    
+    return NextResponse.json({
+      message: 'Reset code has been sent to your email',
+    });
+    
+  } catch (error: any) {
+    console.error('Error in resend reset code:', error);
+    return NextResponse.json(
+      { error: 'Failed to send reset code' },
       { status: 500 }
     );
   }
