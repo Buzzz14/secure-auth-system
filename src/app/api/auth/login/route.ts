@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
 import { User } from '@/models/User';
+import { LoginAttempt } from '@/models/LoginAttempt';
 import jwt from 'jsonwebtoken';
 
 export async function POST(request: Request) {
@@ -32,8 +33,35 @@ export async function POST(request: Request) {
       );
     }
 
+    // Check login attempts
+    let loginAttempt = await LoginAttempt.findOne({ email: user.email });
+    if (!loginAttempt) {
+      loginAttempt = await LoginAttempt.create({ email: user.email });
+    }
+
+    // Reset attempts if 24 hours have passed
+    await loginAttempt.resetAttempts();
+
+    // Check if account is blocked
+    if (loginAttempt.isBlocked()) {
+      const blockTime = loginAttempt.getBlockTime();
+      if (blockTime === null) {
+        return NextResponse.json(
+          { error: 'Account is permanently blocked due to too many failed attempts. Please contact support.' },
+          { status: 403 }
+        );
+      }
+
+      const minutes = Math.ceil(blockTime / (1000 * 60));
+      return NextResponse.json(
+        { error: `Account is temporarily blocked. Please try again in ${minutes} minutes.` },
+        { status: 403 }
+      );
+    }
+
     // Check if email is verified
     if (!user.isEmailVerified) {
+      await loginAttempt.incrementAttempts();
       return NextResponse.json(
         { error: 'Please verify your email first' },
         { status: 401 }
@@ -43,11 +71,17 @@ export async function POST(request: Request) {
     // Check password
     const isValidPassword = await user.comparePassword(password);
     if (!isValidPassword) {
+      await loginAttempt.incrementAttempts();
       return NextResponse.json(
         { error: 'Invalid credentials' },
         { status: 401 }
       );
     }
+
+    // Reset attempts on successful login
+    loginAttempt.attempts = 0;
+    loginAttempt.blockedUntil = null;
+    await loginAttempt.save();
 
     // Check if password is expired
     if (user.isPasswordExpired()) {
